@@ -21,6 +21,7 @@
 ./minigit files
 ./minigit show <commit_id> <file>
 ./minigit stats
+```
 
 ## Условия
 
