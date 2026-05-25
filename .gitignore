@@ -1,0 +1,4 @@
+minigit
+*.o
+.minigit/
+.DS_Store
