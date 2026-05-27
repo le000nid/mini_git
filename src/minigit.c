@@ -298,6 +298,74 @@ static int copy_index_to_commit(FILE *commit_file)
     return 0;
 }
 
+static int read_commit_header(int commit_id,
+                              int *id,
+                              int *parent,
+                              char *message,
+                              size_t message_size)
+{
+    char commit_path[PATH_BUFFER_SIZE];
+    FILE *commit_file;
+    char line[1024];
+
+    if (id == NULL || parent == NULL || message == NULL) {
+        return 1;
+    }
+
+    if (make_commit_path(commit_id, commit_path, sizeof(commit_path)) != 0) {
+        return 1;
+    }
+
+    commit_file = fopen(commit_path, "r");
+    if (commit_file == NULL) {
+        fprintf(stderr, "Error: cannot open commit '%s': %s\n",
+                commit_path,
+                strerror(errno));
+        return 1;
+    }
+
+    if (fscanf(commit_file, "id %d\n", id) != 1) {
+        fprintf(stderr, "Error: invalid commit id in '%s'\n", commit_path);
+        fclose(commit_file);
+        return 1;
+    }
+
+    if (fscanf(commit_file, "parent %d\n", parent) != 1) {
+        fprintf(stderr, "Error: invalid parent in '%s'\n", commit_path);
+        fclose(commit_file);
+        return 1;
+    }
+
+    if (fgets(line, sizeof(line), commit_file) == NULL) {
+        fprintf(stderr, "Error: invalid message in '%s'\n", commit_path);
+        fclose(commit_file);
+        return 1;
+    }
+
+    if (strncmp(line, "message ", 8) != 0) {
+        fprintf(stderr, "Error: invalid message line in '%s'\n", commit_path);
+        fclose(commit_file);
+        return 1;
+    }
+
+    if (snprintf(message, message_size, "%s", line + 8) >= (int)message_size) {
+        fprintf(stderr, "Error: commit message is too long\n");
+        fclose(commit_file);
+        return 1;
+    }
+
+    message[strcspn(message, "\n")] = '\0';
+
+    if (fclose(commit_file) != 0) {
+        fprintf(stderr, "Error: cannot close commit '%s': %s\n",
+                commit_path,
+                strerror(errno));
+        return 1;
+    }
+
+    return 0;
+}
+
 int minigit_init(void)
 {
     if (path_exists(MINIGIT_DIR)) {
@@ -451,7 +519,40 @@ int minigit_commit(const char *message)
 
 int minigit_log(void)
 {
-    printf("minigit: log is not implemented yet\n");
+    int current_commit;
+    int id;
+    int parent;
+    char message[1024];
+
+    if (ensure_repository_exists() != 0) {
+        return 1;
+    }
+
+    if (read_head(&current_commit) != 0) {
+        return 1;
+    }
+
+    if (current_commit == 0) {
+        printf("No commits yet\n");
+        return 0;
+    }
+
+    while (current_commit != 0) {
+        if (read_commit_header(current_commit,
+                               &id,
+                               &parent,
+                               message,
+                               sizeof(message)) != 0) {
+            return 1;
+        }
+
+        printf("commit %d\n", id);
+        printf("parent %d\n", parent);
+        printf("message %s\n\n", message);
+
+        current_commit = parent;
+    }
+
     return 0;
 }
 
