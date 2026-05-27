@@ -366,6 +366,67 @@ static int read_commit_header(int commit_id,
     return 0;
 }
 
+static int print_commit_files(int commit_id)
+{
+    char commit_path[PATH_BUFFER_SIZE];
+    FILE *commit_file;
+    char line[1024];
+    int in_files_section;
+    int has_files;
+
+    if (make_commit_path(commit_id, commit_path, sizeof(commit_path)) != 0) {
+        return 1;
+    }
+
+    commit_file = fopen(commit_path, "r");
+    if (commit_file == NULL) {
+        fprintf(stderr, "Error: cannot open commit '%s': %s\n",
+                commit_path,
+                strerror(errno));
+        return 1;
+    }
+
+    in_files_section = 0;
+    has_files = 0;
+
+    while (fgets(line, sizeof(line), commit_file) != NULL) {
+        line[strcspn(line, "\n")] = '\0';
+
+        if (strcmp(line, "files") == 0) {
+            in_files_section = 1;
+            continue;
+        }
+
+        if (strcmp(line, "end") == 0) {
+            break;
+        }
+
+        if (in_files_section) {
+            has_files = 1;
+            printf("  %s\n", line);
+        }
+    }
+
+    if (ferror(commit_file)) {
+        fprintf(stderr, "Error: cannot read commit '%s'\n", commit_path);
+        fclose(commit_file);
+        return 1;
+    }
+
+    if (!has_files) {
+        printf("  no files\n");
+    }
+
+    if (fclose(commit_file) != 0) {
+        fprintf(stderr, "Error: cannot close commit '%s': %s\n",
+                commit_path,
+                strerror(errno));
+        return 1;
+    }
+
+    return 0;
+}
+
 int minigit_init(void)
 {
     if (path_exists(MINIGIT_DIR)) {
@@ -558,8 +619,24 @@ int minigit_log(void)
 
 int minigit_files(void)
 {
-    printf("minigit: files is not implemented yet\n");
-    return 0;
+    int current_head;
+
+    if (ensure_repository_exists() != 0) {
+        return 1;
+    }
+
+    if (read_head(&current_head) != 0) {
+        return 1;
+    }
+
+    if (current_head == 0) {
+        printf("No commits yet\n");
+        return 0;
+    }
+
+    printf("Files in commit %d:\n", current_head);
+
+    return print_commit_files(current_head);
 }
 
 int minigit_show(const char *commit_id, const char *path)
