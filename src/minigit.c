@@ -137,7 +137,7 @@ static int copy_file(const char *source_path, const char *destination_path)
     return 0;
 }
 
-static int append_to_index(const char *path, uint64_t hash)
+static int append_add_to_index(const char *path, uint64_t hash)
 {
     FILE *index_file;
 
@@ -147,7 +147,31 @@ static int append_to_index(const char *path, uint64_t hash)
         return 1;
     }
 
-    if (fprintf(index_file, "%s %016" PRIx64 "\n", path, hash) < 0) {
+    if (fprintf(index_file, "A %s %016" PRIx64 "\n", path, hash) < 0) {
+        fprintf(stderr, "Error: cannot write to index\n");
+        fclose(index_file);
+        return 1;
+    }
+
+    if (fclose(index_file) != 0) {
+        fprintf(stderr, "Error: cannot close index: %s\n", strerror(errno));
+        return 1;
+    }
+
+    return 0;
+}
+
+static int append_delete_to_index(const char *path)
+{
+    FILE *index_file;
+
+    index_file = fopen(INDEX_FILE, "a");
+    if (index_file == NULL) {
+        fprintf(stderr, "Error: cannot open index: %s\n", strerror(errno));
+        return 1;
+    }
+
+    if (fprintf(index_file, "D %s\n", path) < 0) {
         fprintf(stderr, "Error: cannot write to index\n");
         fclose(index_file);
         return 1;
@@ -269,6 +293,9 @@ static int copy_index_to_commit(FILE *commit_file)
 {
     FILE *index_file;
     char line[1024];
+    char action;
+    char file_path[512];
+    char file_hash[128];
 
     index_file = fopen(INDEX_FILE, "r");
     if (index_file == NULL) {
@@ -277,10 +304,14 @@ static int copy_index_to_commit(FILE *commit_file)
     }
 
     while (fgets(line, sizeof(line), index_file) != NULL) {
-        if (fputs(line, commit_file) == EOF) {
-            fprintf(stderr, "Error: cannot write file entry to commit\n");
-            fclose(index_file);
-            return 1;
+        if (sscanf(line, " %c %511s %127s", &action, file_path, file_hash) >= 2) {
+            if (action == 'A') {
+                if (fprintf(commit_file, "%s %s\n", file_path, file_hash) < 0) {
+                    fprintf(stderr, "Error: cannot write file entry to commit\n");
+                    fclose(index_file);
+                    return 1;
+                }
+            }
         }
     }
 
@@ -559,6 +590,98 @@ static int print_object_by_hash(const char *hash)
     return 0;
 }
 
+static int index_contains_path(const char *path)
+{
+    FILE *index_file;
+    char line[1024];
+    char action;
+    char file_path[512];
+    char file_hash[128];
+
+    index_file = fopen(INDEX_FILE, "r");
+    if (index_file == NULL) {
+        return 0;
+    }
+
+    while (fgets(line, sizeof(line), index_file) != NULL) {
+        if (sscanf(line, " %c %511s %127s", &action, file_path, file_hash) >= 2) {
+            if (strcmp(file_path, path) == 0) {
+                fclose(index_file);
+                return 1;
+            }
+        }
+    }
+
+    fclose(index_file);
+    return 0;
+}
+
+static int copy_previous_commit_files(FILE *commit_file, int parent_id)
+{
+    char parent_path[PATH_BUFFER_SIZE];
+    FILE *parent_file;
+    char line[1024];
+    char file_path[512];
+    char file_hash[128];
+    int in_files_section;
+
+    if (parent_id == 0) {
+        return 0;
+    }
+
+    if (make_commit_path(parent_id, parent_path, sizeof(parent_path)) != 0) {
+        return 1;
+    }
+
+    parent_file = fopen(parent_path, "r");
+    if (parent_file == NULL) {
+        fprintf(stderr, "Error: cannot open parent commit '%s': %s\n",
+                parent_path,
+                strerror(errno));
+        return 1;
+    }
+
+    in_files_section = 0;
+
+    while (fgets(line, sizeof(line), parent_file) != NULL) {
+        line[strcspn(line, "\n")] = '\0';
+
+        if (strcmp(line, "files") == 0) {
+            in_files_section = 1;
+            continue;
+        }
+
+        if (strcmp(line, "end") == 0) {
+            break;
+        }
+
+        if (in_files_section) {
+            if (sscanf(line, "%511s %127s", file_path, file_hash) == 2) {
+                if (!index_contains_path(file_path)) {
+                    if (fprintf(commit_file, "%s %s\n", file_path, file_hash) < 0) {
+                        fprintf(stderr, "Error: cannot copy parent file entry\n");
+                        fclose(parent_file);
+                        return 1;
+                    }
+                }
+            }
+        }
+    }
+
+    if (ferror(parent_file)) {
+        fprintf(stderr, "Error: cannot read parent commit\n");
+        fclose(parent_file);
+        return 1;
+    }
+
+    if (fclose(parent_file) != 0) {
+        fprintf(stderr, "Error: cannot close parent commit: %s\n", strerror(errno));
+        return 1;
+    }
+
+    return 0;
+}
+
 int minigit_init(void)
 {
     if (path_exists(MINIGIT_DIR)) {
@@ -624,11 +747,31 @@ int minigit_add(const char *path)
         }
     }
 
-    if (append_to_index(path, hash) != 0) {
+    if (append_add_to_index(path, hash) != 0) {
         return 1;
     }
 
     printf("Added '%s' as object %016" PRIx64 "\n", path, hash);
+
+    return 0;
+}
+
+int minigit_rm(const char *path)
+{
+    if (ensure_repository_exists() != 0) {
+        return 1;
+    }
+
+    if (path == NULL || path[0] == '\0') {
+        fprintf(stderr, "Error: rm requires file path\n");
+        return 1;
+    }
+
+    if (append_delete_to_index(path) != 0) {
+        return 1;
+    }
+
+    printf("Marked '%s' for removal\n", path);
 
     return 0;
 }
@@ -677,6 +820,11 @@ int minigit_commit(const char *message)
         fprintf(commit_file, "message %s\n", message) < 0 ||
         fprintf(commit_file, "files\n") < 0) {
         fprintf(stderr, "Error: cannot write commit header\n");
+        fclose(commit_file);
+        return 1;
+    }
+
+    if (copy_previous_commit_files(commit_file, current_head) != 0) {
         fclose(commit_file);
         return 1;
     }
@@ -810,6 +958,9 @@ int minigit_status(void)
 {
     FILE *index_file;
     char line[1024];
+    char action;
+    char file_path[512];
+    char file_hash[128];
     int has_entries;
 
     if (ensure_repository_exists() != 0) {
@@ -824,11 +975,18 @@ int minigit_status(void)
 
     has_entries = 0;
 
-    printf("Staged files:\n");
+    printf("Staged changes:\n");
 
     while (fgets(line, sizeof(line), index_file) != NULL) {
-        has_entries = 1;
-        printf("  %s", line);
+        if (sscanf(line, " %c %511s %127s", &action, file_path, file_hash) >= 2) {
+            has_entries = 1;
+
+            if (action == 'A') {
+                printf("  added/modified: %s %s\n", file_path, file_hash);
+            } else if (action == 'D') {
+                printf("  deleted: %s\n", file_path);
+            }
+        }
     }
 
     if (ferror(index_file)) {

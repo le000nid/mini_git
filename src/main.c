@@ -8,6 +8,7 @@ static void print_usage(void)
     printf("Usage:\n");
     printf("  minigit init\n");
     printf("  minigit add <file>\n");
+    printf("  minigit rm <file>\n");
     printf("  minigit commit <message>\n");
     printf("  minigit log\n");
     printf("  minigit files\n");
@@ -33,6 +34,15 @@ int main(int argc, char **argv)
         }
 
         return minigit_add(argv[2]);
+    }
+
+    if (strcmp(argv[1], "rm") == 0) {
+    if (argc != 3) {
+        fprintf(stderr, "Error: rm requires file path\n");
+        return 1;
+    }
+
+    return minigit_rm(argv[2]);
     }
 
     if (strcmp(argv[1], "commit") == 0) {
