@@ -361,6 +361,18 @@ static int read_commit_header(int commit_id,
         return 1;
     }
 
+    if (fgets(line, sizeof(line), commit_file) == NULL) {
+        fprintf(stderr, "Error: invalid commit hash in '%s'\n", commit_path);
+        fclose(commit_file);
+        return 1;
+    }
+
+    if (strncmp(line, "hash ", 5) != 0) {
+        fprintf(stderr, "Error: invalid hash line in '%s'\n", commit_path);
+        fclose(commit_file);
+        return 1;
+    }
+
     if (fscanf(commit_file, "parent %d\n", parent) != 1) {
         fprintf(stderr, "Error: invalid parent in '%s'\n", commit_path);
         fclose(commit_file);
@@ -776,10 +788,177 @@ int minigit_rm(const char *path)
     return 0;
 }
 
+static int hash_update_string(uint64_t *hash, const char *text)
+{
+    if (hash == NULL || text == NULL) {
+        return 1;
+    }
+
+    *hash = fnv1a_hash_update(*hash,
+                              (const unsigned char *)text,
+                              strlen(text));
+
+    return 0;
+}
+
+static int calculate_commit_hash(int commit_id,
+                                 int parent_id,
+                                 const char *message,
+                                 uint64_t *commit_hash)
+{
+    uint64_t hash;
+    char buffer[1024];
+
+    if (message == NULL || commit_hash == NULL) {
+        return 1;
+    }
+
+    hash = 14695981039346656037ULL;
+
+    if (snprintf(buffer, sizeof(buffer), "id %d\n", commit_id) >=
+        (int)sizeof(buffer)) {
+        fprintf(stderr, "Error: commit hash buffer is too small\n");
+        return 1;
+    }
+    hash_update_string(&hash, buffer);
+
+    if (snprintf(buffer, sizeof(buffer), "parent %d\n", parent_id) >=
+        (int)sizeof(buffer)) {
+        fprintf(stderr, "Error: commit hash buffer is too small\n");
+        return 1;
+    }
+    hash_update_string(&hash, buffer);
+
+    if (snprintf(buffer, sizeof(buffer), "message %s\n", message) >=
+        (int)sizeof(buffer)) {
+        fprintf(stderr, "Error: commit hash buffer is too small\n");
+        return 1;
+    }
+    hash_update_string(&hash, buffer);
+
+    hash_update_string(&hash, "files\n");
+
+    if (parent_id != 0) {
+        char parent_path[PATH_BUFFER_SIZE];
+        FILE *parent_file;
+        char line[1024];
+        char file_path[512];
+        char file_hash[128];
+        int in_files_section;
+
+        if (make_commit_path(parent_id, parent_path, sizeof(parent_path)) != 0) {
+            return 1;
+        }
+
+        parent_file = fopen(parent_path, "r");
+        if (parent_file == NULL) {
+            fprintf(stderr, "Error: cannot open parent commit '%s': %s\n",
+                    parent_path,
+                    strerror(errno));
+            return 1;
+        }
+
+        in_files_section = 0;
+
+        while (fgets(line, sizeof(line), parent_file) != NULL) {
+            line[strcspn(line, "\n")] = '\0';
+
+            if (strcmp(line, "files") == 0) {
+                in_files_section = 1;
+                continue;
+            }
+
+            if (strcmp(line, "end") == 0) {
+                break;
+            }
+
+            if (in_files_section) {
+                if (sscanf(line, "%511s %127s", file_path, file_hash) == 2) {
+                    if (!index_contains_path(file_path)) {
+                        if (snprintf(buffer,
+                                     sizeof(buffer),
+                                     "%s %s\n",
+                                     file_path,
+                                     file_hash) >= (int)sizeof(buffer)) {
+                            fprintf(stderr, "Error: commit hash buffer is too small\n");
+                            fclose(parent_file);
+                            return 1;
+                        }
+
+                        hash_update_string(&hash, buffer);
+                    }
+                }
+            }
+        }
+
+        if (ferror(parent_file)) {
+            fprintf(stderr, "Error: cannot read parent commit\n");
+            fclose(parent_file);
+            return 1;
+        }
+
+        if (fclose(parent_file) != 0) {
+            fprintf(stderr, "Error: cannot close parent commit: %s\n",
+                    strerror(errno));
+            return 1;
+        }
+    }
+
+    {
+        FILE *index_file;
+        char line[1024];
+        char action;
+        char file_path[512];
+        char file_hash[128];
+
+        index_file = fopen(INDEX_FILE, "r");
+        if (index_file == NULL) {
+            fprintf(stderr, "Error: cannot open index: %s\n", strerror(errno));
+            return 1;
+        }
+
+        while (fgets(line, sizeof(line), index_file) != NULL) {
+            if (sscanf(line, " %c %511s %127s", &action, file_path, file_hash) >= 2) {
+                if (action == 'A') {
+                    if (snprintf(buffer,
+                                 sizeof(buffer),
+                                 "%s %s\n",
+                                 file_path,
+                                 file_hash) >= (int)sizeof(buffer)) {
+                        fprintf(stderr, "Error: commit hash buffer is too small\n");
+                        fclose(index_file);
+                        return 1;
+                    }
+
+                    hash_update_string(&hash, buffer);
+                }
+            }
+        }
+
+        if (ferror(index_file)) {
+            fprintf(stderr, "Error: cannot read index\n");
+            fclose(index_file);
+            return 1;
+        }
+
+        if (fclose(index_file) != 0) {
+            fprintf(stderr, "Error: cannot close index: %s\n", strerror(errno));
+            return 1;
+        }
+    }
+
+    hash_update_string(&hash, "end\n");
+
+    *commit_hash = hash;
+
+    return 0;
+}
+
 int minigit_commit(const char *message)
 {
     int current_head;
     int new_commit_id;
+    uint64_t commit_hash;
     char commit_path[PATH_BUFFER_SIZE];
     FILE *commit_file;
 
@@ -803,6 +982,13 @@ int minigit_commit(const char *message)
 
     new_commit_id = current_head + 1;
 
+    if (calculate_commit_hash(new_commit_id,
+                              current_head,
+                              message,
+                              &commit_hash) != 0) {
+        return 1;
+    }
+
     if (make_commit_path(new_commit_id, commit_path, sizeof(commit_path)) != 0) {
         return 1;
     }
@@ -816,6 +1002,7 @@ int minigit_commit(const char *message)
     }
 
     if (fprintf(commit_file, "id %d\n", new_commit_id) < 0 ||
+        fprintf(commit_file, "hash %016" PRIx64 "\n", commit_hash) < 0 ||
         fprintf(commit_file, "parent %d\n", current_head) < 0 ||
         fprintf(commit_file, "message %s\n", message) < 0 ||
         fprintf(commit_file, "files\n") < 0) {
@@ -854,6 +1041,7 @@ int minigit_commit(const char *message)
     }
 
     printf("Created commit %d: %s\n", new_commit_id, message);
+    printf("Commit hash: %016" PRIx64 "\n", commit_hash);
 
     return 0;
 }

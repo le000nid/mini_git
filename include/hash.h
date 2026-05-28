@@ -5,6 +5,7 @@
 #include <stddef.h>
 
 uint64_t fnv1a_hash_bytes(const unsigned char *data, size_t size);
+uint64_t fnv1a_hash_update(uint64_t hash, const unsigned char *data, size_t size);
 int hash_file(const char *path, uint64_t *hash);
 
 #endif

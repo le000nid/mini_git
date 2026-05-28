@@ -7,9 +7,8 @@
 #define FNV_OFFSET_BASIS 14695981039346656037ULL
 #define FNV_PRIME 1099511628211ULL
 
-uint64_t fnv1a_hash_bytes(const unsigned char *data, size_t size)
+uint64_t fnv1a_hash_update(uint64_t hash, const unsigned char *data, size_t size)
 {
-    uint64_t hash = FNV_OFFSET_BASIS;
     size_t i;
 
     for (i = 0; i < size; ++i) {
@@ -18,6 +17,11 @@ uint64_t fnv1a_hash_bytes(const unsigned char *data, size_t size)
     }
 
     return hash;
+}
+
+uint64_t fnv1a_hash_bytes(const unsigned char *data, size_t size)
+{
+    return fnv1a_hash_update(FNV_OFFSET_BASIS, data, size);
 }
 
 int hash_file(const char *path, uint64_t *hash)
@@ -41,8 +45,8 @@ int hash_file(const char *path, uint64_t *hash)
     result = FNV_OFFSET_BASIS;
 
     while ((ch = fgetc(file)) != EOF) {
-        result ^= (uint64_t)(unsigned char)ch;
-        result *= FNV_PRIME;
+        unsigned char byte = (unsigned char)ch;
+        result = fnv1a_hash_update(result, &byte, 1);
     }
 
     if (ferror(file)) {
