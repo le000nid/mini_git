@@ -427,6 +427,138 @@ static int print_commit_files(int commit_id)
     return 0;
 }
 
+static int find_file_hash_in_commit(int commit_id,
+                                    const char *path,
+                                    char *hash,
+                                    size_t hash_size)
+{
+    char commit_path[PATH_BUFFER_SIZE];
+    FILE *commit_file;
+    char line[1024];
+    char file_path[512];
+    char file_hash[128];
+    int in_files_section;
+
+    if (path == NULL || hash == NULL) {
+        return 1;
+    }
+
+    if (make_commit_path(commit_id, commit_path, sizeof(commit_path)) != 0) {
+        return 1;
+    }
+
+    commit_file = fopen(commit_path, "r");
+    if (commit_file == NULL) {
+        fprintf(stderr, "Error: cannot open commit '%s': %s\n",
+                commit_path,
+                strerror(errno));
+        return 1;
+    }
+
+    in_files_section = 0;
+
+    while (fgets(line, sizeof(line), commit_file) != NULL) {
+        line[strcspn(line, "\n")] = '\0';
+
+        if (strcmp(line, "files") == 0) {
+            in_files_section = 1;
+            continue;
+        }
+
+        if (strcmp(line, "end") == 0) {
+            break;
+        }
+
+        if (in_files_section) {
+            if (sscanf(line, "%511s %127s", file_path, file_hash) == 2) {
+                if (strcmp(file_path, path) == 0) {
+                    if (snprintf(hash, hash_size, "%s", file_hash) >=
+                        (int)hash_size) {
+                        fprintf(stderr, "Error: hash buffer is too small\n");
+                        fclose(commit_file);
+                        return 1;
+                    }
+
+                    if (fclose(commit_file) != 0) {
+                        fprintf(stderr, "Error: cannot close commit '%s': %s\n",
+                                commit_path,
+                                strerror(errno));
+                        return 1;
+                    }
+
+                    return 0;
+                }
+            }
+        }
+    }
+
+    if (ferror(commit_file)) {
+        fprintf(stderr, "Error: cannot read commit '%s'\n", commit_path);
+        fclose(commit_file);
+        return 1;
+    }
+
+    if (fclose(commit_file) != 0) {
+        fprintf(stderr, "Error: cannot close commit '%s': %s\n",
+                commit_path,
+                strerror(errno));
+        return 1;
+    }
+
+    return 2;
+}
+
+static int print_object_by_hash(const char *hash)
+{
+    char object_path[PATH_BUFFER_SIZE];
+    FILE *object_file;
+    int ch;
+
+    if (hash == NULL) {
+        return 1;
+    }
+
+    if (snprintf(object_path,
+                 sizeof(object_path),
+                 "%s/%s.obj",
+                 OBJECTS_DIR,
+                 hash) >= (int)sizeof(object_path)) {
+        fprintf(stderr, "Error: object path is too long\n");
+        return 1;
+    }
+
+    object_file = fopen(object_path, "rb");
+    if (object_file == NULL) {
+        fprintf(stderr, "Error: cannot open object '%s': %s\n",
+                object_path,
+                strerror(errno));
+        return 1;
+    }
+
+    while ((ch = fgetc(object_file)) != EOF) {
+        if (putchar(ch) == EOF) {
+            fprintf(stderr, "Error: cannot write output\n");
+            fclose(object_file);
+            return 1;
+        }
+    }
+
+    if (ferror(object_file)) {
+        fprintf(stderr, "Error: cannot read object '%s'\n", object_path);
+        fclose(object_file);
+        return 1;
+    }
+
+    if (fclose(object_file) != 0) {
+        fprintf(stderr, "Error: cannot close object '%s': %s\n",
+                object_path,
+                strerror(errno));
+        return 1;
+    }
+
+    return 0;
+}
+
 int minigit_init(void)
 {
     if (path_exists(MINIGIT_DIR)) {
@@ -641,10 +773,37 @@ int minigit_files(void)
 
 int minigit_show(const char *commit_id, const char *path)
 {
-    printf("minigit: show is not implemented yet: commit=%s file=%s\n",
-           commit_id,
-           path);
-    return 0;
+    int id;
+    int result;
+    char hash[128];
+    char extra;
+
+    if (ensure_repository_exists() != 0) {
+        return 1;
+    }
+
+    if (commit_id == NULL || path == NULL) {
+        fprintf(stderr, "Error: show requires commit id and file path\n");
+        return 1;
+    }
+
+    if (sscanf(commit_id, "%d%c", &id, &extra) != 1 || id <= 0) {
+        fprintf(stderr, "Error: invalid commit id '%s'\n", commit_id);
+        return 1;
+    }
+
+    result = find_file_hash_in_commit(id, path, hash, sizeof(hash));
+
+    if (result == 2) {
+        fprintf(stderr, "Error: file '%s' not found in commit %d\n", path, id);
+        return 1;
+    }
+
+    if (result != 0) {
+        return 1;
+    }
+
+    return print_object_by_hash(hash);
 }
 
 int minigit_status(void)
