@@ -954,6 +954,42 @@ int minigit_show(const char *commit_id, const char *path)
     return print_object_by_hash(hash);
 }
 
+int minigit_exists(const char *commit_id, const char *path)
+{
+    int id;
+    int result;
+    char hash[128];
+    char extra;
+
+    if (ensure_repository_exists() != 0) {
+        return 1;
+    }
+
+    if (commit_id == NULL || path == NULL) {
+        fprintf(stderr, "Error: exists requires commit id and file path\n");
+        return 1;
+    }
+
+    if (sscanf(commit_id, "%d%c", &id, &extra) != 1 || id <= 0) {
+        fprintf(stderr, "Error: invalid commit id '%s'\n", commit_id);
+        return 1;
+    }
+
+    result = find_file_hash_in_commit(id, path, hash, sizeof(hash));
+
+    if (result == 0) {
+        printf("true\n");
+        return 0;
+    }
+
+    if (result == 2) {
+        printf("false\n");
+        return 0;
+    }
+
+    return 1;
+}
+
 int minigit_status(void)
 {
     FILE *index_file;
