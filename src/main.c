@@ -14,6 +14,7 @@ static void print_usage(void)
     printf("  minigit files\n");
     printf("  minigit show <commit_id> <file>\n");
     printf("  minigit exists <commit_id> <file>\n");
+    printf("  minigit commit-info <commit_id>\n");
     printf("  minigit status\n");
 }
 
@@ -81,6 +82,15 @@ int main(int argc, char **argv)
         return minigit_exists(argv[2], argv[3]);
     }
 
+    if (strcmp(argv[1], "commit-info") == 0) {
+        if (argc != 3) {
+            fprintf(stderr, "Error: commit-info requires commit id\n");
+            return 1;
+        }
+
+        return minigit_print_commit(argv[2]);
+    }
+    
     if (strcmp(argv[1], "status") == 0) {
         return minigit_status();
     }

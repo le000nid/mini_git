@@ -990,6 +990,41 @@ int minigit_exists(const char *commit_id, const char *path)
     return 1;
 }
 
+int minigit_print_commit(const char *commit_id)
+{
+    int id;
+    int real_id;
+    int parent;
+    char message[1024];
+    char extra;
+
+    if (ensure_repository_exists() != 0) {
+        return 1;
+    }
+
+    if (commit_id == NULL) {
+        fprintf(stderr, "Error: commit-info requires commit id\n");
+        return 1;
+    }
+
+    if (sscanf(commit_id, "%d%c", &id, &extra) != 1 || id <= 0) {
+        fprintf(stderr, "Error: invalid commit id '%s'\n", commit_id);
+        return 1;
+    }
+
+    if (read_commit_header(id, &real_id, &parent, message, sizeof(message)) != 0) {
+        return 1;
+    }
+
+    printf("commit %d\n", real_id);
+    printf("parent %d\n", parent);
+    printf("message %s\n", message);
+    printf("\n");
+    printf("files:\n");
+
+    return print_commit_files(id);
+}
+
 int minigit_status(void)
 {
     FILE *index_file;
