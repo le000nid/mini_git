@@ -11,7 +11,8 @@ static void print_usage(void)
     printf("  minigit rm <file>\n");
     printf("  minigit commit <message>\n");
     printf("  minigit log\n");
-    printf("  minigit files\n");
+    printf("  minigit files [commit_id]\n");
+    printf("  minigit stats\n");
     printf("  minigit show <commit_id> <file>\n");
     printf("  minigit exists <commit_id> <file>\n");
     printf("  minigit commit-info <commit_id>\n");
@@ -61,7 +62,25 @@ int main(int argc, char **argv)
     }
 
     if (strcmp(argv[1], "files") == 0) {
-        return minigit_files();
+        if (argc == 2) {
+            return minigit_files(NULL);
+        }
+
+        if (argc == 3) {
+            return minigit_files(argv[2]);
+        }
+
+        fprintf(stderr, "Error: files requires zero or one commit id\n");
+        return 1;
+    }
+
+    if (strcmp(argv[1], "stats") == 0) {
+        if (argc != 2) {
+            fprintf(stderr, "Error: stats does not take arguments\n");
+            return 1;
+        }
+
+        return minigit_stats();
     }
 
     if (strcmp(argv[1], "show") == 0) {

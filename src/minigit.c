@@ -7,6 +7,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <dirent.h>
 
 #define MINIGIT_DIR ".minigit"
 #define OBJECTS_DIR ".minigit/objects"
@@ -694,6 +695,47 @@ static int copy_previous_commit_files(FILE *commit_file, int parent_id)
     return 0;
 }
 
+static int get_file_size(const char *path, long *size)
+{
+    FILE *file;
+    long result;
+
+    if (path == NULL || size == NULL) {
+        return 1;
+    }
+
+    file = fopen(path, "rb");
+    if (file == NULL) {
+        fprintf(stderr, "Error: cannot open file '%s': %s\n",
+                path,
+                strerror(errno));
+        return 1;
+    }
+
+    if (fseek(file, 0, SEEK_END) != 0) {
+        fprintf(stderr, "Error: cannot seek file '%s'\n", path);
+        fclose(file);
+        return 1;
+    }
+
+    result = ftell(file);
+    if (result < 0) {
+        fprintf(stderr, "Error: cannot get size of file '%s'\n", path);
+        fclose(file);
+        return 1;
+    }
+
+    if (fclose(file) != 0) {
+        fprintf(stderr, "Error: cannot close file '%s': %s\n",
+                path,
+                strerror(errno));
+        return 1;
+    }
+
+    *size = result;
+    return 0;
+}
+
 int minigit_init(void)
 {
     if (path_exists(MINIGIT_DIR)) {
@@ -1085,26 +1127,35 @@ int minigit_log(void)
     return 0;
 }
 
-int minigit_files(void)
+int minigit_files(const char *commit_id)
 {
-    int current_head;
+    int target_commit;
+    char extra;
 
     if (ensure_repository_exists() != 0) {
         return 1;
     }
 
-    if (read_head(&current_head) != 0) {
-        return 1;
+    if (commit_id == NULL) {
+        if (read_head(&target_commit) != 0) {
+            return 1;
+        }
+    } else {
+        if (sscanf(commit_id, "%d%c", &target_commit, &extra) != 1 ||
+            target_commit <= 0) {
+            fprintf(stderr, "Error: invalid commit id '%s'\n", commit_id);
+            return 1;
+        }
     }
 
-    if (current_head == 0) {
+    if (target_commit == 0) {
         printf("No commits yet\n");
         return 0;
     }
 
-    printf("Files in commit %d:\n", current_head);
+    printf("Files in commit %d:\n", target_commit);
 
-    return print_commit_files(current_head);
+    return print_commit_files(target_commit);
 }
 
 int minigit_show(const char *commit_id, const char *path)
@@ -1211,6 +1262,161 @@ int minigit_print_commit(const char *commit_id)
     printf("files:\n");
 
     return print_commit_files(id);
+}
+
+int minigit_stats(void)
+{
+    int head;
+    int commit_id;
+    int commit_count;
+    int object_count;
+    long full_copy_size;
+    long actual_object_size;
+
+    if (ensure_repository_exists() != 0) {
+        return 1;
+    }
+
+    if (read_head(&head) != 0) {
+        return 1;
+    }
+
+    commit_count = head;
+    full_copy_size = 0;
+    actual_object_size = 0;
+    object_count = 0;
+
+    for (commit_id = 1; commit_id <= head; ++commit_id) {
+        char commit_path[PATH_BUFFER_SIZE];
+        FILE *commit_file;
+        char line[1024];
+        char file_path[512];
+        char file_hash[128];
+        int in_files_section;
+
+        if (make_commit_path(commit_id, commit_path, sizeof(commit_path)) != 0) {
+            return 1;
+        }
+
+        commit_file = fopen(commit_path, "r");
+        if (commit_file == NULL) {
+            fprintf(stderr, "Error: cannot open commit '%s': %s\n",
+                    commit_path,
+                    strerror(errno));
+            return 1;
+        }
+
+        in_files_section = 0;
+
+        while (fgets(line, sizeof(line), commit_file) != NULL) {
+            line[strcspn(line, "\n")] = '\0';
+
+            if (strcmp(line, "files") == 0) {
+                in_files_section = 1;
+                continue;
+            }
+
+            if (strcmp(line, "end") == 0) {
+                break;
+            }
+
+            if (in_files_section) {
+                if (sscanf(line, "%511s %127s", file_path, file_hash) == 2) {
+                    char object_path[PATH_BUFFER_SIZE];
+                    long object_size;
+
+                    if (snprintf(object_path,
+                                 sizeof(object_path),
+                                 "%s/%s.obj",
+                                 OBJECTS_DIR,
+                                 file_hash) >= (int)sizeof(object_path)) {
+                        fprintf(stderr, "Error: object path is too long\n");
+                        fclose(commit_file);
+                        return 1;
+                    }
+
+                    if (get_file_size(object_path, &object_size) != 0) {
+                        fclose(commit_file);
+                        return 1;
+                    }
+
+                    full_copy_size += object_size;
+                }
+            }
+        }
+
+        if (ferror(commit_file)) {
+            fprintf(stderr, "Error: cannot read commit '%s'\n", commit_path);
+            fclose(commit_file);
+            return 1;
+        }
+
+        if (fclose(commit_file) != 0) {
+            fprintf(stderr, "Error: cannot close commit '%s': %s\n",
+                    commit_path,
+                    strerror(errno));
+            return 1;
+        }
+    }
+
+    {
+        DIR *dir;
+        struct dirent *entry;
+
+        dir = opendir(OBJECTS_DIR);
+        if (dir == NULL) {
+            fprintf(stderr, "Error: cannot open objects directory: %s\n",
+                    strerror(errno));
+            return 1;
+        }
+
+        while ((entry = readdir(dir)) != NULL) {
+            char object_path[PATH_BUFFER_SIZE];
+            long object_size;
+
+            if (entry->d_name[0] == '.') {
+                continue;
+            }
+
+            if (snprintf(object_path,
+                         sizeof(object_path),
+                         "%s/%s",
+                         OBJECTS_DIR,
+                         entry->d_name) >= (int)sizeof(object_path)) {
+                fprintf(stderr, "Error: object path is too long\n");
+                closedir(dir);
+                return 1;
+            }
+
+            if (get_file_size(object_path, &object_size) != 0) {
+                closedir(dir);
+                return 1;
+            }
+
+            actual_object_size += object_size;
+            object_count++;
+        }
+
+        if (closedir(dir) != 0) {
+            fprintf(stderr, "Error: cannot close objects directory: %s\n",
+                    strerror(errno));
+            return 1;
+        }
+    }
+
+    printf("Repository statistics:\n");
+    printf("  Commits: %d\n", commit_count);
+    printf("  Unique objects: %d\n", object_count);
+    printf("  Full copy size: %ld bytes\n", full_copy_size);
+    printf("  Actual object size: %ld bytes\n", actual_object_size);
+
+    if (full_copy_size >= actual_object_size) {
+        printf("  Saved: %ld bytes\n", full_copy_size - actual_object_size);
+    } else {
+        printf("  Saved: 0 bytes\n");
+    }
+
+    return 0;
 }
 
 int minigit_status(void)
